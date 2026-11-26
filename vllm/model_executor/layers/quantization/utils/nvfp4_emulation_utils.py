@@ -131,11 +131,7 @@ def _nvfp4_gathered_bias_kernel(
         mask=block_mask,
         other=0,
     )
-    weight_scale = tl.cast(
-        raw_weight_scale,
-        tl.float8e4nv,
-        bitcast=True,
-    ).to(tl.float32)
+    weight_scale = _e4m3_inline(raw_weight_scale)
     global_scale = tl.load(global_scale_ptr).to(tl.float32)
 
     element_ids = tl.arange(0, 16)
@@ -333,7 +329,7 @@ def _dequantize_nvfp4_kernel(
         mask=block_mask,
         other=0,
     )
-    scale_f32 = tl.cast(raw_scales, tl.float8e4nv, bitcast=True).to(tl.float32)
+    scale_f32 = _e4m3_inline(raw_scales)
     scale_values = (scale_f32 * global_scale)[:, None]
 
     # Load [TILE_BLOCKS, BLOCK_PACKED] packed bytes
@@ -504,7 +500,7 @@ def _triton_dequantize_nvfp4(
 
     output = torch.empty(total_rows_flat, k, dtype=dtype, device=tensor_fp4.device)
 
-    # View as uint8 so Triton can load raw bytes and bitcast to float8_e4m3fn
+    # View as uint8 so Triton can load raw bytes and decode them as float8_e4m3fn
     scale_raw = tensor_sf_2d.contiguous().view(torch.uint8)
 
     # Shape-adaptive tile sizing: for large row counts (3D), process
@@ -812,7 +808,9 @@ def ref_nvfp4_quant_dequant(
 
     `global_scale` is expected to have a single element.
     """
-    if current_platform.is_cuda_alike():
+    # The Triton kernel rounds the block scales with tl.float8e4nv, which Triton
+    # supports on CUDA only from SM89.
+    if current_platform.is_rocm() or current_platform.has_device_capability(89):
         return _triton_nvfp4_quant_dequant(x, global_scale, block_size)
 
     x_m, x_k = x.shape

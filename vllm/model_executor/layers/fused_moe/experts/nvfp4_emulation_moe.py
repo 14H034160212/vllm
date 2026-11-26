@@ -35,6 +35,7 @@ from vllm.model_executor.layers.fused_moe.utils import (
 )
 from vllm.model_executor.layers.quantization.utils.nvfp4_emulation_utils import (
     _e2m1_inline,
+    _e4m3_inline,
 )
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
     QuantKey,
@@ -220,7 +221,7 @@ def fused_moe_nvfp4_emulation_kernel(
         else:
             b_scale_raw = tl.load(b_scale_ptrs, mask=kp_mask, other=0.0)
 
-        b_scale = tl.cast(b_scale_raw, tl.float8e4nv, bitcast=True).to(tl.float32)
+        b_scale = _e4m3_inline(b_scale_raw)
         b_scale = b_scale * w_global_scale
 
         # Scale both halves with the same per-block scale (the two
@@ -275,6 +276,8 @@ def invoke_fused_moe_nvfp4_emulation_kernel(
     w_global_scale has shape [E] (per-expert scalar).
     """
     assert B_scale is not None and B_scale.ndim == 3
+    # Pass raw bytes: the kernel decodes them with _e4m3_inline.
+    B_scale = B_scale.view(torch.uint8)
 
     N = B.size(1)
     K = A.size(1)
